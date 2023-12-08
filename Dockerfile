@@ -1,5 +1,5 @@
 FROM ubuntu
-LABEL maintainer="gf"
+LABEL maintainer="gf" version="1.1"
 
 USER root
 
