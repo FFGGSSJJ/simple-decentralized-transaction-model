@@ -13,7 +13,7 @@ The simple model is designed with 2 layers
 
 ***Total Order Multicast*** is designed by utilizing TCP reliable unicast and ISIS algorithm, and will satisfy:
 
-- If a correct process delivers message `m` before `m` then any other correct process that delivers `m'` will have already delivered `m`
+- If a correct process delivers message `a` before `b` then any other correct process that delivers `b` will have already delivered `a`
 
 The mechanism is designed based on **ISIS Algorithm** as shown here:
 
