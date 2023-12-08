@@ -5,6 +5,7 @@ extern "C" {
 #include <string.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <signal.h>
 }
 
 #include <thread>
@@ -114,6 +115,23 @@ void node_connect(std::map<std::string, std::vector<std::string>>& nodes, std::m
 
 }
 
+void sigint_handler(int sig) {
+	std::cout << "SIGINT catch" << std::endl;
+	return;
+}
+
+void sigterm_handler(int sig) {
+	std::cout << "SIGTERM catched " << sig << std::endl;
+	do_shutdown = 1;
+	shutdown_requested = true;
+	while(term_cnt < 3){
+		std::cout << "[MAIN THREAD] " << do_shutdown << " " << shutdown_requested.load() << std::endl;
+		std::cout << "wait on termination " << term_cnt << std::endl;
+		continue;
+	}
+	return;
+}
+
 
 int main(int argc, char* argv[])
 {
@@ -142,6 +160,12 @@ int main(int argc, char* argv[])
 	node_name.push_back('0'+node_id);
     int listenfd = node_listen(node_name, port);
 
+	/* set signal mask for worker thread */
+    sigset_t mask;
+	sigemptyset(&mask);	// guarantee the worker thread will block signals
+    sigaddset (&mask, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &mask, NULL);
+
 	/* start application thread */
 	std::thread transaction_handler(transaction_recv, node_id);
 
@@ -149,6 +173,13 @@ int main(int argc, char* argv[])
 	std::thread rmulticastcast(rmulti_cast, node_id, node_number, std::ref(server_node_fds));
 	std::thread rmulticastrecv(rmulti_recv, node_number, std::ref(client_node_fds));
 
+	/* set signal handler for main thread */
+	pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
+	struct sigaction sigterm_action;
+    sigterm_action.sa_handler = sigterm_handler;
+	sigemptyset(&sigterm_action.sa_mask);	// guarantee the main thread will not block signals
+    sigterm_action.sa_flags = 0;
+    sigaction(SIGTERM, &sigterm_action, NULL);
 
 	/* accept incoming connection */
 	int new_sock = -1;
@@ -156,12 +187,21 @@ int main(int argc, char* argv[])
 	socklen_t addr_size = sizeof(new_addr);
 	std::vector<std::thread> threads;
 
+	int node_thread_cnt = 0;
     while ((new_sock = accept(listenfd, (struct sockaddr*)&new_addr, &addr_size)) > 0) {
         std::cout << client_node_fds.size() << " accept:" << new_sock << " port:" << new_addr.sin_port << std::endl;
         // create thread for node listening
         std::thread node_thread(client_node_listening, new_sock, std::ref(client_node_fds));
         threads.push_back(std::move(node_thread));
+
+		// emm
+		node_thread_cnt++;
+		if (node_thread_cnt >= node_number) 
+			break;
     }
+
+	/* wait for SIGTERM */
+	sigsuspend(&mask);
 
 	std::cout << "Done" << std::endl;
 

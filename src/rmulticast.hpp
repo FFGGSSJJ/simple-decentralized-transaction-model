@@ -8,13 +8,22 @@
 #include <mutex>
 #include <queue>
 #include <algorithm>
+#include <atomic>
+
 #include <arpa/inet.h>
+#include <signal.h>
 
 #include "sync_queue.hpp"
 
 /* mutex to guarantee thread safety */
 std::mutex nodemap_mutex;
 std::mutex seq_mutex;
+
+/* thread safety vars
+   I am not sure if this is a good approach */
+volatile sig_atomic_t do_shutdown = 0;
+volatile sig_atomic_t term_cnt = 0;
+std::atomic<bool> shutdown_requested(false);
 
 static SyncMsgQueue transaction_queue;  // shared memory between application and multicast
 static SyncMsgQueue msg_queue;
@@ -91,8 +100,6 @@ void pack_msg2send(std::string& msg2send, std::string msg, int8_t msgtype, uint8
 /* handle received message with type MSG */
 int message_handler(std::string msg, std::map<std::string, int>& nodes)
 {
-    std::cout << "msg handler" << msg.size() << std::endl;
-
     /* reply with proposed seq num */
     std::string nodename = "node";
     int node_id = (int)msg.c_str()[1];
@@ -119,11 +126,7 @@ int message_handler(std::string msg, std::map<std::string, int>& nodes)
     deliver_queue.push_back(msg2deliver);
 
     /* reply */
-    int ret = 0;
-    while (ret <= 0) {
-        ret = send(nodes[nodename], propmsg.c_str(), (size_t)propmsg.size(), 0);
-        std::cout <<"[DEBUG]: reply prop::" << (uint16_t)propmsg.c_str()[2] << " msgid::" << (uint16_t)propmsg.c_str()[3] << std::endl;
-    }
+    int ret = send(nodes[nodename], propmsg.c_str(), (size_t)propmsg.size(), 0);
 
     if (ret < 0) {
         return EXIT_FAILURE;
@@ -136,8 +139,6 @@ int message_handler(std::string msg, std::map<std::string, int>& nodes)
 /* handle received message with type FINAL_SEQ_NUM */
 int finalseq_handler(std::string msg)
 {   
-    std::cout << "final handler" << std::endl;
-
     int msg_id = (int)msg.c_str()[3];
     int final_seq_num = (int)msg.c_str()[2];
     int node_id = (int)msg.c_str()[1];
@@ -178,13 +179,14 @@ void client_node_listening(int sockfd, std::map<std::string, int>& nodes)
     
     if (buffer[0] == INIT) {
         while(!nodemap_mutex.try_lock());
-        std::cout << "Add " << info.substr(info.find(' ')+1) << " to map" << std::endl;
+        std::cout << "[INFO] Add " << info.substr(info.find(' ')+1) << " to map" << std::endl;
         nodes[info.substr(info.find(' ')+1)] = sockfd;
         nodemap_mutex.unlock();
     }
 
     /* keep listenning the client node */
-	while (true) {
+	while (!do_shutdown && !shutdown_requested.load()) {
+        std::cout << "[THREAD CLIENT LISTEN] " << do_shutdown << " " << shutdown_requested.load() << std::endl;
 		ret = recv(sockfd, buffer, (size_t)recv_size, 0);
 
         /* check recv bytes */
@@ -220,6 +222,9 @@ void client_node_listening(int sockfd, std::map<std::string, int>& nodes)
         /* next loop */
         memset(buffer, 0, (size_t)recv_size);
 	}
+
+    std::cout << "[THREAD CLIENT LISTEN] TERMINATED " << std::endl;
+    term_cnt++;
 	return;
 }
 
@@ -241,8 +246,10 @@ void rmulti_recv(int node_num, std::map<std::string, int>& nodes)
     seq_mutex.unlock();
 
     /* handle message queue */
-    while (true)
+    term_cnt++;
+    while (!do_shutdown && !shutdown_requested.load())
     {
+        std::cout << "[THREAD RMULTICAST RECV] " << do_shutdown << " " << shutdown_requested.load() << std::endl;
         if (msg_queue.empty()) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
@@ -266,6 +273,8 @@ void rmulti_recv(int node_num, std::map<std::string, int>& nodes)
         }
 
     }
+    std::cout << "[THREAD RMULTICAST RECV] TERMINATED " << std::endl;
+    term_cnt++;
     return;
 }
 
@@ -285,7 +294,8 @@ void rmulti_cast(int node_id, int node_num, std::map<std::string, int>& nodes)
     }
 
     /* start broad cast */
-    while (true) {
+    while (!do_shutdown && !shutdown_requested.load()) {
+        std::cout << "[THREAD RMULTICAST SEND] " << do_shutdown << " " << shutdown_requested.load() << std::endl;
         // receive message
         std::string msg, msg2queue, msg2send;
         std::string msg_type;
@@ -407,5 +417,7 @@ void rmulti_cast(int node_id, int node_num, std::map<std::string, int>& nodes)
             deliver_queue.pop_front();
         }
     }
+    std::cout << "[THREAD RMULTICAST SEND] TERMINATED " << std::endl;
+    term_cnt++;
     return;
 }
